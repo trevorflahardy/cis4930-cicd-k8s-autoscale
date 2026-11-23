@@ -26,7 +26,7 @@ echo "orders-worker replicas: $(replicas orders-worker) (KEDA min $worker_min)"
 docker pull -q "$K6_IMAGE" >/dev/null
 
 section "Load: k6 ramping to $RATE req/s, hold $HOLD -> $TARGET_URL"
-docker run --rm --network "$DOCKER_NETWORK" \
+docker run --rm --network "$DOCKER_NETWORK" --user "$(id -u):$(id -g)" \
   -v "$ROOT/tests/load:/scripts:ro" -v "$EVIDENCE_DIR:/out" \
   -e BASE_URL="$TARGET_URL" -e RATE="$RATE" -e HOLD="$HOLD" \
   "$K6_IMAGE" run --quiet /scripts/orders.js >"$EVIDENCE_DIR/k6-output.txt" 2>&1 &
