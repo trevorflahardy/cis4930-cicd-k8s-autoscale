@@ -1,0 +1,297 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      load_rate:
+        description: "Peak k6 arrival rate (requests/s) for the autoscaling test"
+        default: "40"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  TERRAFORM_VERSION: "~1.17"
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  FORCE_COLOR: "1"
+
+jobs:
+  # ------------------------------------------------------------------ CI
+  lint:
+    name: Lint & static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+          cache-dependency-glob: app/uv.lock
+
+      - name: Ruff lint
+        working-directory: app
+        run: uv run --frozen ruff check --output-format=github .
+
+      - name: Ruff format check
+        working-directory: app
+        run: uv run --frozen ruff format --check .
+
+      - name: ShellCheck
+        run: shellcheck --external-sources scripts/*.sh
+
+      - name: Hadolint (Dockerfile)
+        run: docker run --rm -i hadolint/hadolint:v2.15.1 < app/Dockerfile
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff infra
+
+      - name: terraform validate
+        run: |
+          for stage in infra/01-platform infra/02-addons infra/03-app; do
+            echo "::group::validate $stage"
+            terraform -chdir="$stage" init -backend=false -input=false >/dev/null
+            terraform -chdir="$stage" validate
+            echo "::endgroup::"
+          done
+
+      - name: Compose file
+        run: docker compose config --quiet
+
+  test:
+    name: Test (unit + integration + migrations)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: orders
+          POSTGRES_USER: orders
+          POSTGRES_PASSWORD: ci-only-password
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U orders -d orders"
+          --health-interval 5s --health-timeout 3s --health-retries 12
+      redis:
+        image: redis:8-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 12
+    env:
+      PG_HOST: localhost
+      PG_PASSWORD: ci-only-password
+      REDIS_HOST: localhost
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+          cache-dependency-glob: app/uv.lock
+
+      - name: Unit tests
+        run: uv run --frozen pytest tests/unit --cov --cov-report= --junitxml=junit-unit.xml
+
+      - name: Alembic migrations (upgrade, model drift check, round trip)
+        run: |
+          uv run --frozen alembic upgrade head
+          uv run --frozen alembic check
+          uv run --frozen alembic downgrade base
+          uv run --frozen alembic upgrade head
+
+      - name: Integration tests (real Postgres + Redis)
+        run: >-
+          uv run --frozen pytest tests/integration -m integration
+          --cov --cov-append --cov-report=xml --cov-report=term
+          --cov-fail-under=80 --junitxml=junit-integration.xml
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          echo "## Test coverage" >> "$GITHUB_STEP_SUMMARY"
+          uv run --frozen coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: test-reports
+          path: |
+            app/junit-*.xml
+            app/coverage.xml
+
+  build:
+    name: Build & scan image
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: orders-api:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: app
+          tags: ${{ env.IMAGE }}
+          build-args: APP_VERSION=${{ github.sha }}
+          provenance: false
+          outputs: type=docker,dest=${{ runner.temp }}/image.tar
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trivy vulnerability scan
+        run: |
+          docker run --rm -v "${{ runner.temp }}:/work" aquasec/trivy:0.76.2 image \
+            --input /work/image.tar --scanners vuln --severity CRITICAL,HIGH \
+            --ignore-unfixed --exit-code 1 --no-progress
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: image
+          path: ${{ runner.temp }}/image.tar
+          retention-days: 1
+
+  # ------------------------------------------------------------------ CD
+  deploy:
+    name: Deploy (Terraform) & verify
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      TF_VAR_image: orders-api:${{ github.sha }}
+      EXPECTED_VERSION: ${{ github.sha }}
+      RATE: ${{ inputs.load_rate || '40' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: image
+          path: ${{ runner.temp }}
+
+      - name: Load image into the runner's Docker daemon
+        run: docker load -i "${{ runner.temp }}/image.tar"
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Toolchain
+        run: |
+          terraform version
+          docker version --format 'docker {{.Server.Version}}'
+          kubectl version --client
+          jq --version
+          mkdir -p evidence
+
+      - name: "Terraform 01-platform: init + plan"
+        working-directory: infra/01-platform
+        run: |
+          terraform init
+          terraform plan -out=tfplan
+
+      - name: "Terraform 01-platform: apply (kind cluster, Postgres, Redis)"
+        working-directory: infra/01-platform
+        run: terraform apply tfplan | tee -a ../../evidence/terraform-apply.txt
+
+      - name: "Terraform 02-addons: apply (metrics-server, KEDA)"
+        working-directory: infra/02-addons
+        run: |
+          terraform init
+          terraform apply -auto-approve | tee -a ../../evidence/terraform-apply.txt
+
+      - name: "Terraform 03-app: apply (migrate Job, API, worker, HPA, ScaledObject)"
+        working-directory: infra/03-app
+        run: |
+          terraform init
+          terraform apply -auto-approve | tee -a ../../evidence/terraform-apply.txt
+
+      - name: Smoke tests
+        run: scripts/smoke-test.sh | tee evidence/smoke-test.txt
+
+      - name: Autoscaling test (k6 load -> HPA + KEDA)
+        run: scripts/autoscale-test.sh | tee evidence/autoscale-test.txt
+
+      - name: Drift check (second terraform plan must be empty)
+        run: scripts/drift-check.sh | tee evidence/drift-check.txt
+
+      - name: Collect evidence
+        if: always()
+        run: scripts/collect-evidence.sh || true
+
+      - name: Job summary
+        if: always()
+        run: scripts/write-summary.sh >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Terraform destroy
+        if: always()
+        run: |
+          for stage in 03-app 02-addons 01-platform; do
+            [ -f "infra/$stage/terraform.tfstate" ] || continue
+            echo "::group::destroy $stage"
+            terraform -chdir="infra/$stage" destroy -auto-approve -no-color \
+              | tee -a evidence/terraform-destroy.txt || echo "destroy $stage failed"
+            echo "::endgroup::"
+          done
+          echo "remaining containers:"; docker ps -a --format '{{.Names}}'
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: deployment-evidence
+          path: evidence/
+
+  publish:
+    name: Publish image to GHCR
+    needs: deploy
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: image
+          path: ${{ runner.temp }}
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag and push (only images that passed deploy verification)
+        run: |
+          docker load -i "${{ runner.temp }}/image.tar"
+          repo="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/orders-api"
+          for tag in "$GITHUB_SHA" latest; do
+            docker tag "orders-api:$GITHUB_SHA" "$repo:$tag"
+            docker push "$repo:$tag"
+          done
+          echo "Published \`$repo:$GITHUB_SHA\`" >> "$GITHUB_STEP_SUMMARY"
