@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Shared helpers for the verification scripts. Source, don't execute.
-# Variables defined here are consumed by the scripts that source this file.
+# Sourced by the test scripts; most of these variables are only used by the callers.
 # shellcheck disable=SC2034
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -21,26 +20,30 @@ DOCKER_NETWORK="$(tf_out docker_network)"
 POSTGRES_CONTAINER="$(tf_out postgres_container)"
 REDIS_CONTAINER="$(tf_out redis_container)"
 
-FAILURES=0
+failures=0
 
-pass() { printf '  \033[32mPASS\033[0m %s\n' "$1"; }
-fail() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; FAILURES=$((FAILURES + 1)); }
+section() {
+  printf '\n== %s\n' "$1"
+}
 
-# check "<description>" <command...>
+# check <description> <command> [args...]
 check() {
   local desc="$1"
   shift
-  if "$@" >/dev/null 2>&1; then pass "$desc"; else fail "$desc"; fi
+  if "$@" &>/dev/null; then
+    printf '  PASS %s\n' "$desc"
+  else
+    printf '  FAIL %s\n' "$desc"
+    failures=$((failures + 1))
+  fi
 }
-
-section() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 
 finish() {
   echo
-  if [ "$FAILURES" -eq 0 ]; then
+  if ((failures == 0)); then
     echo "RESULT: all checks passed"
   else
-    echo "RESULT: $FAILURES check(s) failed"
+    echo "RESULT: $failures check(s) failed"
   fi
-  exit "$FAILURES"
+  exit "$failures"
 }

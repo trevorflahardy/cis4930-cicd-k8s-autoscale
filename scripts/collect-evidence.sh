@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# Snapshot the running deployment into evidence/ (git-ignored; uploaded as a CI artifact).
+# Snapshot the running deployment into evidence/ (uploaded as a CI artifact).
 set -uo pipefail
 # shellcheck source=scripts/lib.sh
 source "$(dirname "$0")/lib.sh"
 
+# capture <file> <command> [args...]
 capture() {
   local file="$EVIDENCE_DIR/$1"
   shift
-  { echo "\$ $*"; "$@" 2>&1; echo; } >>"$file"
+  {
+    printf '$ %s\n' "$*"
+    "$@" 2>&1
+    echo
+  } >>"$file"
 }
 
 rm -f "$EVIDENCE_DIR"/{docker,kubernetes,terraform-outputs,app}.txt
@@ -29,9 +34,9 @@ for stage in 01-platform 02-addons 03-app; do
   capture terraform-outputs.txt terraform -chdir="$ROOT/infra/$stage" state list
 done
 
-capture app.txt curl -sS "$BASE_URL/"
-capture app.txt curl -sS "$BASE_URL/ready"
-capture app.txt curl -sS "$BASE_URL/stats"
+for path in / /ready /stats; do
+  capture app.txt curl -sS "$BASE_URL$path"
+done
 
 echo "evidence written to $EVIDENCE_DIR"
 ls -1 "$EVIDENCE_DIR"
