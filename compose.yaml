@@ -1,0 +1,70 @@
+# Local development only: run the app stack without Kubernetes.
+#   docker compose up --build        -> http://127.0.0.1:8000
+# The deployed environment (CI/CD) is provisioned by Terraform under infra/, not by this file.
+
+name: orders-dev
+
+x-app-env: &app-env
+  PG_HOST: postgres
+  PG_PASSWORD: dev-only-password
+  REDIS_HOST: redis
+  REDIS_PASSWORD: dev-only-password
+  PRICING_ITERATIONS: "50000"
+  APP_VERSION: dev
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: orders
+      POSTGRES_USER: orders
+      POSTGRES_PASSWORD: dev-only-password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orders -d orders"]
+      interval: 5s
+      retries: 12
+
+  redis:
+    image: redis:8-alpine
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "dev-only-password"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "dev-only-password", "ping"]
+      interval: 5s
+      retries: 12
+
+  migrate:
+    build: ./app
+    command: ["python", "-m", "orders.migrate"]
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build: ./app
+    environment: *app-env
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: ./app
+    command: ["python", "-m", "orders.worker"]
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  redisdata:
