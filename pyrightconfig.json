@@ -1,0 +1,8 @@
+{
+  "venvPath": "app",
+  "venv": ".venv",
+  "extraPaths": ["app"],
+  "pythonVersion": "3.13",
+  "typeCheckingMode": "standard",
+  "exclude": ["**/.venv", "**/.terraform"]
+}
