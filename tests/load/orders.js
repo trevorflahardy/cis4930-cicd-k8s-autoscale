@@ -29,6 +29,9 @@ export const options = {
   summaryTrendStats: ['avg', 'p(50)', 'p(95)', 'max'],
 };
 
+// Reads of not-yet-created ids return 404 by design; don't count them as failures.
+http.setResponseCallback(http.expectedStatuses(200, 201, 404));
+
 const headers = { 'Content-Type': 'application/json' };
 const items = ['widget', 'gadget', 'sprocket', 'gizmo'];
 

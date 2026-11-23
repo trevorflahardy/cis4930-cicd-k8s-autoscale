@@ -44,7 +44,7 @@ evidence: ## Snapshot cluster/Docker state into evidence/
 
 down: ## terraform destroy all stages (reverse order)
 	for s in 03-app 02-addons 01-platform; do \
-	  [ -f infra/$$s/terraform.tfstate ] && terraform -chdir=infra/$$s destroy -auto-approve -input=false || true; \
+	  if [ -f infra/$$s/terraform.tfstate ]; then terraform -chdir=infra/$$s destroy -auto-approve -input=false; fi; \
 	done
 
 all: up smoke load drift evidence ## Full pipeline locally (leaves the stack running)

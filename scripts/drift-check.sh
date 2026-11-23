@@ -9,9 +9,13 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 failures=0
 for stage in 01-platform 02-addons 03-app; do
   echo "== terraform plan ($stage)"
-  terraform -chdir="$ROOT/infra/$stage" plan -detailed-exitcode -input=false -lock=false -no-color \
-    | grep -E '^(No changes|Plan:|  # )' || true
-  code=${PIPESTATUS[0]}
+  out="$(terraform -chdir="$ROOT/infra/$stage" plan -detailed-exitcode -input=false -lock=false -no-color 2>&1)"
+  code=$?
+  if [ "$code" -eq 1 ]; then
+    echo "$out" | tail -n 20
+  else
+    echo "$out" | grep -E '^(No changes|Plan:|  # )' || true
+  fi
   case "$code" in
     0) echo "   PASS: no changes" ;;
     2) echo "   FAIL: drift detected"; failures=$((failures + 1)) ;;

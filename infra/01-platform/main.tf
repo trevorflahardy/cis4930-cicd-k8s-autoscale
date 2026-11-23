@@ -77,7 +77,7 @@ resource "docker_volume" "redis_data" {
 
 resource "docker_container" "postgres" {
   name    = "${var.cluster_name}-postgres"
-  image   = docker_image.postgres.image_id
+  image   = docker_image.postgres.name
   restart = "unless-stopped"
 
   env = [
@@ -112,7 +112,7 @@ resource "docker_container" "postgres" {
 
 resource "docker_container" "redis" {
   name    = "${var.cluster_name}-redis"
-  image   = docker_image.redis.image_id
+  image   = docker_image.redis.name
   restart = "unless-stopped"
 
   # Append-only persistence so queued orders survive a Redis restart.

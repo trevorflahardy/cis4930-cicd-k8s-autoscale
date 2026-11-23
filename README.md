@@ -2,7 +2,7 @@
 
 [![CI/CD](https://github.com/trevorflahardy/cis4930-cicd-k8s-autoscale/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/trevorflahardy/cis4930-cicd-k8s-autoscale/actions/workflows/ci-cd.yml)
 
-CIS 4930 final project (**Option A: Local Docker**). This extends the Assignment 4 Terraform/Docker setup into a full pipeline. On every push or pull request, GitHub Actions tests and builds a mock order-processing service. Terraform then deploys it to a Kubernetes cluster that runs in Docker, backed by real Postgres and Redis containers. The pipeline proves the service works and **autoscales under simulated client load**, checks for drift, and tears everything down.
+CIS 4930 final project (**Option A: Local Docker**). This extends the Assignment 4 Terraform/Docker setup into a full pipeline. On every push or pull request to `main`, GitHub Actions tests and builds a mock order-processing service. Terraform then deploys it to a Kubernetes cluster that runs in Docker, backed by real Postgres and Redis containers. The pipeline proves the service works and **autoscales under simulated client load**, checks for drift, and tears everything down.
 
 ## Architecture
 
@@ -19,7 +19,10 @@ flowchart LR
   subgraph data["Docker containers (kreuzwerker/docker)"]
     pg[("Postgres 17<br/>named volume")]
     rd[("Redis 8 AOF<br/>named volume")]
+    dapi["orders-api-docker<br/>app image · 127.0.0.1:8081"]
   end
+  dapi -->|"by container name"| pg
+  dapi --> rd
   api -->|"SQLAlchemy ORM"| pg
   api -->|"cache + enqueue"| rd
   worker -->|"BRPOP"| rd
@@ -29,6 +32,7 @@ flowchart LR
 
 - **API** (`POST /orders`, `GET /orders/{id}`, `/stats`, `/health`, `/ready`). Each order runs a CPU-heavy PBKDF2 "pricing" step, writes to Postgres, caches in Redis, and pushes onto a Redis queue. Client traffic therefore turns into CPU load for the HPA.
 - **Worker** pops orders off the queue and marks them processed. KEDA scales it on queue depth, i.e. on pending client requests.
+- **Docker-run API.** The same app image also runs as a plain Docker container (`orders-api-docker`, `127.0.0.1:8081`), managed by the `kreuzwerker/docker` provider. It reaches Postgres and Redis by container name over the shared network.
 - **Data tier** runs as Docker containers on the `kind` network. Pods reach it through selector-less Services and EndpointSlices, using IPs from Terraform outputs (no hardcoded addresses).
 - **Schema** is SQLAlchemy 2.0 ORM models with Alembic migrations. A migration Job runs before each rollout.
 
@@ -52,13 +56,13 @@ Triggers: `push` to `main`, `pull_request` to `main`, `workflow_dispatch`.
 |---|---|---|
 | `infra/01-platform` | `kreuzwerker/docker`, `tehcyx/kind`, `random` | kind cluster (1 control plane + 2 workers, `127.0.0.1:8080` port mapping), Postgres + Redis containers, named volumes, generated passwords |
 | `infra/02-addons` | `hashicorp/helm` | metrics-server, KEDA |
-| `infra/03-app` | `hashicorp/kubernetes` | image load into nodes, namespace, ConfigMap/Secret, data-tier Services + EndpointSlices, migration Job, API + worker Deployments, NodePort Service, PDB, HPA, KEDA TriggerAuthentication + ScaledObject |
+| `infra/03-app` | `hashicorp/kubernetes`, `kreuzwerker/docker` | app image as a Docker container (`docker_image` + `docker_container`, port 8081), image load into nodes, namespace, ConfigMap/Secret, data-tier Services + EndpointSlices, migration Job, API + worker Deployments, NodePort Service, PDB, HPA, KEDA TriggerAuthentication + ScaledObject |
 
 The stages are separate so each provider is configured from known values at plan time, and so KEDA's CRDs exist before the `ScaledObject` is planned. Later stages read earlier outputs via `terraform_remote_state`.
 
 ## Run it locally
 
-Requires Docker, Terraform ≥ 1.6, kubectl, jq, and [uv](https://docs.astral.sh/uv/).
+Requires Docker, Terraform ≥ 1.6, kubectl, jq, and [uv](https://docs.astral.sh/uv/) (plus shellcheck for `make lint`).
 
 ```bash
 make up        # build image, terraform apply all 3 stages
@@ -68,7 +72,7 @@ make drift     # second terraform plan -> "No changes" for every stage
 make down      # terraform destroy (reverse order)
 ```
 
-Other targets: `make lint`, `make test`, `make evidence`, and `make dev` (runs the app with `docker compose`, no Kubernetes, for quick iteration). The app is reachable at `http://127.0.0.1:8080` when deployed with Terraform.
+Other targets: `make lint`, `make test`, `make evidence`, and `make dev` (runs the app with `docker compose`, no Kubernetes, for quick iteration). When deployed with Terraform, the app is reachable at `http://127.0.0.1:8080` (Kubernetes) and `http://127.0.0.1:8081` (Docker container).
 
 ## Layout
 
