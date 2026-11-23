@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Import a locally built Docker image into every kind node's containerd store.
-# Called by Terraform (infra/03-app) with IMAGE and NODES in the environment.
+# Called by Terraform with IMAGE and NODES in the environment.
 set -euo pipefail
 
 : "${IMAGE:?IMAGE is required}"
