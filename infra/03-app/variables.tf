@@ -51,3 +51,9 @@ variable "worker_work_ms" {
   type        = number
   default     = 200
 }
+
+variable "api_docker_port" {
+  description = "Host port (127.0.0.1) for the API running as a plain Docker container."
+  type        = number
+  default     = 8081
+}

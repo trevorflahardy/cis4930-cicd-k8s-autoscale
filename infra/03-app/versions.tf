@@ -6,6 +6,10 @@ terraform {
       source  = "hashicorp/kubernetes"
       version = "~> 3.5"
     }
+    docker = {
+      source  = "kreuzwerker/docker"
+      version = "~> 4.7"
+    }
   }
 }
 
@@ -26,3 +30,5 @@ provider "kubernetes" {
   client_key             = local.platform.client_key
   cluster_ca_certificate = local.platform.cluster_ca_certificate
 }
+
+provider "docker" {}

@@ -8,6 +8,10 @@ source "$(dirname "$0")/lib.sh"
 # json <field>: print one top-level field of the JSON document on stdin (empty if absent).
 json() { jq -r --arg k "$1" '.[$k] // empty'; }
 
+APP_DIR="$ROOT/infra/03-app"
+DOCKER_API_URL="$(terraform -chdir="$APP_DIR" output -raw api_docker_url)"
+DOCKER_API="$(terraform -chdir="$APP_DIR" output -raw api_docker_container)"
+
 section "Docker runtime (kreuzwerker/docker resources)"
 docker ps --filter "name=$CLUSTER" --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
 check "Postgres container is healthy" \
@@ -77,6 +81,23 @@ check "unknown order returns 404" \
 check "invalid order is rejected with 422" \
   test "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/orders" \
     -H 'content-type: application/json' -d '{"customer":"x","item":"y","quantity":0,"unit_price_cents":1}')" = "422"
+
+section "Application container on Docker (kreuzwerker/docker, $DOCKER_API_URL)"
+docker ps --filter "name=$DOCKER_API" --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+check "app container $DOCKER_API is running and healthy" \
+  bash -c "docker inspect -f '{{.State.Health.Status}}' '$DOCKER_API' | grep -qx healthy"
+check "app container joined the '$DOCKER_NETWORK' network" \
+  bash -c "docker inspect -f '{{range \$k, \$v := .NetworkSettings.Networks}}{{\$k}} {{end}}' '$DOCKER_API' | grep -qw '$DOCKER_NETWORK'"
+docker_ready="$(curl -sS "$DOCKER_API_URL/ready")"
+echo "GET /ready   -> $docker_ready"
+check "app container reaches postgres + redis by container name" \
+  bash -c "echo '$docker_ready' | grep -q '\"postgres\":\"ok\"' && echo '$docker_ready' | grep -q '\"redis\":\"ok\"'"
+if [ -n "${EXPECTED_VERSION:-}" ]; then
+  check "app container runs version $EXPECTED_VERSION" \
+    test "$(curl -fsS "$DOCKER_API_URL/" | json version)" = "$EXPECTED_VERSION"
+fi
+check "app container serves the order created through Kubernetes (shared data tier)" \
+  test "$(curl -fsS "$DOCKER_API_URL/orders/$order_id" | json id)" = "$order_id"
 
 section "Data persisted in Postgres (queried directly in the container)"
 row="$(docker exec "$POSTGRES_CONTAINER" psql -U orders -d orders -tAc \
