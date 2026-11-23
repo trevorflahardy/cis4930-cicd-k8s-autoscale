@@ -1,0 +1,65 @@
+# Course materials and local tooling (never committed)
+assignment_*_directions.txt
+*directions*.txt
+.remember/
+
+# Submission proof: screenshots, reports, terminal captures, archives
+evidence/
+submission/
+report/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.pdf
+*.docx
+*.zip
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+*.tfvars
+*.tfvars.json
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Kubernetes credentials written by the kind provider
+.kube/
+*.kubeconfig
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+*.crt
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+junit*.xml
+
+# Load-test output and image tarballs
+k6-summary.json
+*.tar
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
